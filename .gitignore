@@ -10,7 +10,6 @@ external/wamr/lib/*
 external/wamr/include/lib_export.h
 external/wamr/include/wasm_c_api.h
 external/wamr/include/wasm_export.h
-external/wamrc_bin/
 
 # Generated AOT artifacts.
 scripts/*.aot
