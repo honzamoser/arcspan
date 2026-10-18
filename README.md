@@ -1,6 +1,6 @@
 # Arcspan
 
-This repository contains a modern 3D game engine and renderer implemented in **Zig 0.16.0** using:
+This repository contains a modern 3D game engine and renderer implemented in **Zig** using:
 - **wgpu-native** (via `wgpu_native_zig`) for WebGPU modern 3D rendering with Cook-Torrance PBR shading and 2D texture samplers.
 - **Jolt Physics** (via `joltc`) for multi-threaded, robust 3D rigid body simulation, collision layers, and dynamics.
 - **SDL3** for platform windowing, input events, and low-latency audio stream synthesis.
@@ -8,28 +8,19 @@ This repository contains a modern 3D game engine and renderer implemented in **Z
 
 ---
 
-## 🧪 Automated Testing & Verification
+## Build support
 
-The test suite in `test/wasm_scene_test.zig` verifies that a WebAssembly module compiled from Zig (`scripts/scene_controller.zig`) interacts with the 3D scene across multiple frames:
+### Windows
 
-```bash
-# Run the WebAssembly engine integration tests
-zig build test
-```
+- MSVC and windows-specific libraries are included in the repo
 
-### What the test verifies:
-1. Compiles `scripts/scene_controller.zig` into `wasm32-freestanding` WebAssembly.
-2. Initializes `ScriptHost` and instantiates the script inside the Wasm3 runtime.
-3. Invokes `on_init()`, asserting that:
-   - Initial rotations (`rotation_x = 0.25`, `rotation_y = 0.50`) and camera distance (`4.0`) are applied to `engine.Scene`.
-   - Distinctive vibrant face colors are applied to the 3D cube mesh.
-   - Script debug log messages are captured by the host `EngineContext`.
-4. Simulates multi-frame updates (`on_update`), asserting that:
-   - Incremental rotation matrices update each frame.
-   - Sine-wave camera breathing oscillation functions as expected.
-   - Front face vertex colors are dynamically modulated over time.
+### Linux
 
----
+- Build support using GNU, but libraries are missing. Need to be done
+
+### Mac
+
+- Same as Linux
 
 ## 🚀 Building & Running
 

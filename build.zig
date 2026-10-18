@@ -1,7 +1,16 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const default_target: std.Target.Query = if (builtin.os.tag == .windows) .{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+        .abi = .msvc,
+    } else .{};
+
+    const target = b.standardTargetOptions(.{
+        .default_target = default_target,
+    });
     const optimize = b.standardOptimizeOption(.{});
 
     // 1. Dependencies
@@ -222,8 +231,10 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    const install_jolt_dll = b.addInstallFile(b.path("external/jolt/bin/joltc.dll"), "bin/joltc.dll");
-    b.getInstallStep().dependOn(&install_jolt_dll.step);
+    if (target.result.os.tag == .windows) {
+        const install_jolt_dll = b.addInstallFile(b.path("external/jolt/bin/joltc.dll"), "bin/joltc.dll");
+        b.getInstallStep().dependOn(&install_jolt_dll.step);
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
