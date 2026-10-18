@@ -38,10 +38,14 @@ pub fn build(b: *std.Build) void {
     // installed output is named `iwasm` and is placed under external/wamr/lib.
     const configure_wamr = b.addSystemCommand(&.{
         "cmake",
-        "-S", "external/wamr",
-        "-B", wamr_build_dir,
-        "-G", "Visual Studio 17 2022",
-        "-A", "x64",
+        "-S",
+        "external/wamr",
+        "-B",
+        wamr_build_dir,
+        "-G",
+        "Visual Studio 17 2022",
+        "-A",
+        "x64",
         "-DWAMR_BUILD_PLATFORM=windows",
         "-DWAMR_BUILD_TARGET=X86_64",
         "-DWAMR_BUILD_INTERP=1",
@@ -55,16 +59,22 @@ pub fn build(b: *std.Build) void {
     });
     const build_wamr = b.addSystemCommand(&.{
         "cmake",
-        "--build", wamr_build_dir,
-        "--config", "Release",
-        "--target", "vmlib",
+        "--build",
+        wamr_build_dir,
+        "--config",
+        "Release",
+        "--target",
+        "vmlib",
     });
     build_wamr.step.dependOn(&configure_wamr.step);
     const install_wamr = b.addSystemCommand(&.{
         "cmake",
-        "--install", wamr_build_dir,
-        "--config", "Release",
-        "--prefix", "external/wamr",
+        "--install",
+        wamr_build_dir,
+        "--config",
+        "Release",
+        "--prefix",
+        "external/wamr",
     });
     install_wamr.step.dependOn(&build_wamr.step);
 
@@ -83,24 +93,34 @@ pub fn build(b: *std.Build) void {
     });
     const configure_wamrc = b.addSystemCommand(&.{
         "cmake",
-        "-S", "external/wamr/wamr-compiler",
-        "-B", wamrc_build_dir,
-        "-G", "Visual Studio 17 2022",
-        "-A", "x64",
+        "-S",
+        "external/wamr/wamr-compiler",
+        "-B",
+        wamrc_build_dir,
+        "-G",
+        "Visual Studio 17 2022",
+        "-A",
+        "x64",
     });
     configure_wamrc.step.dependOn(&build_wamr_llvm.step);
     const build_wamrc = b.addSystemCommand(&.{
         "cmake",
-        "--build", wamrc_build_dir,
-        "--config", "Release",
-        "--target", "wamrc",
+        "--build",
+        wamrc_build_dir,
+        "--config",
+        "Release",
+        "--target",
+        "wamrc",
     });
     build_wamrc.step.dependOn(&configure_wamrc.step);
     const install_wamrc = b.addSystemCommand(&.{
         "cmake",
-        "--install", wamrc_build_dir,
-        "--config", "Release",
-        "--prefix", "external/wamr",
+        "--install",
+        wamrc_build_dir,
+        "--config",
+        "Release",
+        "--prefix",
+        "external/wamr",
     });
     install_wamrc.step.dependOn(&build_wamrc.step);
 
@@ -138,7 +158,7 @@ pub fn build(b: *std.Build) void {
 
     // WAMR Ahead-of-Time (.aot) compiler invocation
     const run_wamrc = b.addSystemCommand(&.{
-        "external/wamr/bin/wamrc.exe",
+        "external/wamrc_bin/wamrc.exe",
         "--bounds-checks=1",
         "--stack-bounds-checks=0",
         "--size-level=0",

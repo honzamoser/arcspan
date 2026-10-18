@@ -302,8 +302,8 @@ export fn on_init() void {
 
                     // 3. Update the visual transform each frame based on Jolt simulation
                     if (updated_phys.physics_id != 0) {
-                        const pos = engine.physics.getPosition(updated_phys.physics_id);
-                        engine.setEntityLocalPosition(entity, pos);
+                        // const pos = engine.physics.getPosition(updated_phys.physics_id);
+                        // engine.setEntityLocalPosition(entity, pos);
                     }
 
                     return;
@@ -311,8 +311,8 @@ export fn on_init() void {
 
                 // 3. Update the visual transform each frame based on Jolt simulation
                 if (phys.physics_id != 0) {
-                    const pos = engine.physics.getPosition(phys.physics_id);
-                    engine.setEntityLocalPosition(entity, pos);
+                    // const pos = engine.physics.getPosition(phys.physics_id);
+                    // engine.setEntityLocalPosition(entity, pos);
                 }
             }
         }

@@ -1,99 +1,156 @@
 # Developer & AI Agent Guidelines
 
-This document provides operational rules, architectural principles, and workflow instructions for AI agents and human contributors working on this codebase.
+This document describes the architecture, build workflow, and contribution rules for this Zig game engine.
 
----
+## Cardinal rule: separate engine and game code
 
-## 🚨 Cardinal Rule: Strict Engine vs. Game Separation
+Game-specific behavior belongs in `scripts/`. The native engine in `src/` must remain generic and reusable.
 
-> **CRITICAL DIRECTIVE**:
-> **NONE of the game code, gameplay mechanics, or game-specific logic should ever be included in the game engine itself.**
->
-> All game code, player controllers, entity behaviors, gameplay modes, rules, and logic **MUST reside strictly in `scripts/`**.
+| Subsystem | Location | Responsibilities |
+| :--- | :--- | :--- |
+| Engine | `src/`, `src/engine/` | WebGPU rendering, SDL3 platform services, Jolt integration, ECS, input, audio, networking, math, memory, and the WebAssembly host |
+| Gameplay | `scripts/` | Game modes, player and unit behavior, movement, combat, scoring, scene rules, HUD logic, and other game-specific behavior |
 
-### Division of Responsibilities
+Do not put game rules, game modes, character statistics, weapon mechanics, or game-specific scene logic in `src/`.
 
-| Subsystem | Location | What Goes Here | What NEVER Goes Here |
-| :--- | :--- | :--- | :--- |
-| **Game Engine** | `src/`, `src/engine/` | Generic, reusable infrastructure:<br>• WebGPU graphics & PBR rendering<br>• Jolt physics simulation & collision<br>• Built-in Zig ECS archetype & component management<br>• SDL3 windowing, input events & audio<br>• WebAssembly runtime host & outbox queue<br>• Linear algebra & math utilities | ❌ Game rules & win/loss logic<br>❌ Game modes (FPS, TPS, RTS, etc.)<br>❌ Specific character/unit stats & controllers<br>❌ Weapon mechanics, quests, inventories<br>❌ Game-specific scene layouts or assets |
-| **Gameplay Scripts** | `scripts/` | All game-specific logic:<br>• Gameplay modes & camera controllers<br>• Player movement, input mapping & physics impulses<br>• Unit behaviors, waypoints, pathing & RTS state<br>• Health, damage, combat & scoring<br>• UI overlays & gameplay HUD logic | ❌ Low-level GPU driver calls<br>❌ OS window management<br>❌ Direct native threading or raw hardware I/O |
+When gameplay needs a new engine capability:
 
-### What to do when a game feature requires new engine functionality:
-1. **Never hardcode the game feature into `src/`**.
-2. Instead, expose a **generic, domain-agnostic capability** in the engine host (`src/engine/scripting/engine_api.zig`).
-3. Mirror that API into the guest SDK (`scripts/engine_api.zig`).
-4. Implement the actual gameplay behavior in the script (`scripts/scene_controller.zig` or a dedicated script module).
+1. Add a generic host API in `src/engine/scripting/engine_api.zig`.
+2. Mirror the ABI-facing API in the guest-side script SDK.
+3. Implement the actual behavior in `scripts/`.
 
----
+## Current architecture
 
-## 🏗️ Architecture & Project Structure
+This project targets Zig **0.16.0** and uses:
 
-The project is a high-performance 3D game engine and WebAssembly scripting environment implemented in **Zig 0.16.0**.
+- SDL3 for windowing, input, and audio
+- WebGPU through the local `external/wgpu_native_zig` package
+- Jolt Physics through the C wrapper in `external/jolt`
+- WAMR for WebAssembly interpretation and AOT execution
+- A built-in Zig ECS in `src/engine/ecs`
+- WebAssembly guest scripts compiled from Zig
 
-```
-├── build.zig                  # Build graph (SDL3, WGPU, WAMR/Wasm3, Jolt, WASM)
+The repository layout is:
+
+```text
+├── build.zig                  # Build graph and custom setup steps
 ├── build.zig.zon              # Zig package dependencies
-├── external/                  # Vendored native dependencies
-│   ├── jolt/                  # Multi-threaded Jolt Physics C wrapper (joltc)
-│   ├── wamr/                  # WebAssembly Micro Runtime (WAMR with AOT & interpreter)
-│   ├── wasm3/                 # Fallback lightweight WebAssembly interpreter
-│   └── wgpu_native_zig/       # WebGPU native bindings for Zig 0.16.0
-├── scripts/                   # 🎮 GAMEPLAY LAYER (WebAssembly Guest Code)
-│   ├── engine_api.zig         # Guest Zig SDK (interop bindings, math, outbox intents)
-│   ├── scene_controller.zig   # Active gameplay controller & scene logic
-│   └── scene_controller.wasm  # Compiled WebAssembly binary
-├── src/                       # ⚙️ ENGINE LAYER (Native Host Runtime)
-│   ├── main.zig               # Engine initialization, main loop & script execution
-│   ├── sdl3.zig               # SDL3 Zig interface
-│   └── engine/
-│       ├── engine.zig         # Root engine module exporting subsystems
-│       ├── audio/             # SDL3 real-time audio synthesis
-│       ├── camera/            # Generic view/projection camera types
-│       ├── ecs/               # Built-in Zig Entity Component System (ecs.zig)
-│       ├── input/             # Platform input state & mouse deltas
-│       ├── math.zig           # 3D Math (Vec3, Mat4, LookAt, WebGPU perspective)
-│       ├── memory/            # Shared memory & dual-mapped memory protection
-│       ├── physics/           # Jolt physics world & body lifecycle
-│       ├── platform/          # SDL3 window & WGPU surface binding
-│       ├── renderer/          # WGPU PBR renderer, shaders, materials, 2D UI
-│       └── scripting/         # WAMR/Wasm3 runtime, engine API host bindings, outbox
-└── test/
-    └── wasm_scene_test.zig    # Integration tests verifying engine-script interop
+├── .gitmodules                # External Git submodule declarations
+├── external/
+│   ├── jolt/                  # Packaged joltc.h, joltc.lib, and joltc.dll
+│   ├── wamr/                  # WAMR source submodule
+│   └── wgpu_native_zig/       # Local WebGPU Zig bindings
+├── scripts/                   # WebAssembly gameplay code
+├── src/                       # Native engine and host runtime
+└── test/                      # Engine/script integration tests
 ```
 
----
+`zig-pkg/`, `.zig-cache/`, `zig-out/`, WAMR CMake build directories, WAMR
+installed libraries, and generated `.aot` files are local build artifacts and
+must not be committed.
 
-## 🎮 Scripting & UGC Model
+## Scripting and ABI
 
-1. **Compilation Target**: Scripts are written in Zig and compiled to `wasm32-freestanding` (with optional AOT compilation to `.aot` via `wamrc`).
-2. **Memory Safety & Sandbox**:
-   - Guest scripts run sandboxed within isolated linear memory.
-   - Authoritative state is read with zero overhead through shared typed views.
-   - State mutations are communicated back to the engine through an authoritative **Outbox Intent Queue** (e.g. `applyImpulse`, `teleport`, `spawn`, `rotate`, `setCubeColor`).
-3. **Script Lifecycle**:
-   - `pub export fn init() void`: Called once when the script or scene loads.
-   - `pub export fn update(dt: f32) void`: Called every engine frame with delta time.
+Scripts target `wasm32-freestanding`. The normal script pipeline is:
 
----
+```text
+Zig script -> scene_controller.wasm -> wamrc -> scene_controller.aot
+```
 
-## 🛠️ Build, Test, and Run Commands
+The engine embeds the generated WASM/AOT artifacts during the build and can
+also use the installed runtime files. The script lifecycle exports include:
 
-Always ensure code builds cleanly with Zig 0.16.0:
+```zig
+pub export fn init() void
+pub export fn update(dt: f32) void
+```
 
-| Action | Command |
-| :--- | :--- |
-| **Run Engine Application** | `zig build run` |
-| **Build Everything** | `zig build` |
-| **Build WebAssembly Scripts & AOT** | `zig build scripts` *(or `zig build wasm` / `zig build aot`)* |
-| **Run Test Suite** | `zig build test` |
-| **Run with Custom Script** | `zig build run -Dscript=scripts/my_script.zig` |
+Guest scripts run in WAMR-managed linear memory. State changes are sent to the
+host through the engine API and intent/outbox mechanisms.
 
----
+Any data shared across the host/guest boundary must use explicit ABI-compatible
+types. Shared structures must remain `extern struct` values with matching
+field order, sizes, and alignment on both sides.
 
-## 📝 Rules for Modifying Code
+## Dependencies and submodules
 
-1. **Keep Engine Core Clean**: If a task asks for gameplay, character controls, combat, AI, or scene logic, always make changes inside `scripts/`.
-2. **Maintain C-ABI Compatibility**: Any data structures passed between engine and scripts (`scripts/engine_api.zig` and `src/engine/scripting/engine_api.zig`) must remain `extern struct` with matching alignments and layouts.
-3. **Respect Zig 0.16 Conventions**: Use idiomatic Zig 0.16 syntax. Avoid outdated 0.11-0.13 idioms.
-4. **Preserve Documentation**: Retain existing doc comments and structural comments when editing files.
-5. **Verify Changes**: Whenever modifying scripts or engine code, run `zig build` or `zig build test` to ensure there are no compilation errors.
+Initialize submodules after cloning:
+
+```powershell
+git clone --recurse-submodules <repository-url>
+```
+
+For an existing clone:
+
+```powershell
+git submodule update --init --recursive
+```
+
+WAMR is pinned as the `external/wamr` submodule. Its generated outputs are
+ignored. The Windows build expects these locally:
+
+```text
+external/wamr/bin/wamrc.exe
+external/wamr/lib/iwasm.lib
+```
+
+They can be generated with the setup steps below, or supplied from a
+compatible prebuilt release. Do not commit generated binaries to the WAMR
+submodule.
+
+Jolt is currently consumed as packaged native artifacts in `external/jolt`;
+the engine wraps its C API from Zig. Do not replace this with game-specific
+physics logic in the engine.
+
+## Build and test
+
+The build defaults to `x86_64-windows-msvc` on Windows. On other hosts it
+defaults to the host-native target. An explicit target remains available:
+
+```powershell
+zig build
+zig build run
+zig build test
+zig build scripts
+zig build wasm
+zig build aot
+zig build run -Dscript=scripts/my_script.zig
+```
+
+Cross-target builds use:
+
+```powershell
+zig build -Dtarget=x86_64-windows-msvc
+zig build -Dtarget=x86_64-linux-gnu
+```
+
+The current packaged Jolt and WAMR libraries are Windows/MSVC artifacts.
+Linux builds therefore require Linux-compatible Jolt and WAMR libraries and
+additional platform-specific build configuration; selecting a Linux target
+alone is not sufficient.
+
+On Windows, a fresh checkout can build the WAMR runtime and AOT compiler:
+
+```powershell
+zig build setup-wamr
+zig build setup-wamrc
+zig build
+```
+
+`setup-wamrc` builds LLVM and is substantially slower than a normal build.
+It requires Python, CMake, and the Visual Studio 2022 C++ toolchain.
+
+When modifying native code, run the smallest relevant validation command,
+followed by `zig build` or `zig build test` when the change affects the engine
+or host/guest boundary.
+
+## Modification rules
+
+1. Keep gameplay code in `scripts/`; keep reusable infrastructure in `src/`.
+2. Preserve host/guest C ABI compatibility.
+3. Use Zig 0.16.0 syntax and APIs.
+4. Reuse existing helpers and patterns before adding new abstractions.
+5. Keep errors explicit; do not hide failures behind broad catches or silent fallbacks.
+6. Preserve useful documentation and update directly related documentation when behavior changes.
+7. Do not commit caches, generated binaries, compiler outputs, or local IDE files.
+8. Update relevant files after making changes.
