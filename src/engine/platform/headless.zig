@@ -28,6 +28,7 @@ pub const HeadlessServer = struct {
     physics: ?PhysicsWorld = null,
     ecs: ?EcsWorld = null,
     game_state: GameState,
+    shared_ecs: @import("../state/game_state.zig").SharedEcsWorld,
     script_context: EngineContext,
     script_host: ?ScriptHost = null,
 
@@ -44,6 +45,7 @@ pub const HeadlessServer = struct {
         self.scene = Scene.initDefault();
         self.camera = Camera.initDefault();
         self.game_state = GameState.initDefault();
+        self.shared_ecs = .{};
         self.is_running = false;
         self.total_time = 0.0;
         self.tick_count = 0;
@@ -66,6 +68,7 @@ pub const HeadlessServer = struct {
         } else {
             self.ecs = null;
         }
+        if (self.ecs) |*e| e.bindSharedWorld(&self.shared_ecs);
 
         self.script_context = EngineContext{
             .scene = &self.scene,

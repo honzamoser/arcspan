@@ -151,12 +151,6 @@ export fn on_init() void {
     engine.log.print("[WASM Guest] Scene controller script initialized successfully!");
 
     // Baseline scene & player setup
-    engine.applyImpulse(0, engine.Vec3.init(5.0, 0.0, 0.0));
-    engine.scene.setRotationX(0.25);
-    engine.scene.setRotationY(0.50);
-    // engine.scene.setCameraDistance(4.0);
-    engine.scene.setFaceColor(0, 1.0, 0.55, 0.0);
-    engine.scene.setFaceColor(1, 0.5, 0.0, 1.0);
 
     // ---------------------------------------------------------------------------------------------
     // Build Multi-Primitive & PBR Material Showcase Scene with Physics Descriptors
@@ -227,7 +221,7 @@ export fn on_init() void {
     // ---------------------------------------------------------------------------------------------
     jolt_floor_id = engine.physics.createBody(e5, .box, engine.Vec3.init(0.0, -0.9, 0.0), false);
     jolt_sphere_id = engine.physics.createBody(e4, .sphere, engine.Vec3.init(0.0, 1.8, 1.7), true);
-    jolt_ruby_cube_id = engine.physics.createBody(e0, .box, engine.Vec3.init(0.0, 0.0, 0.0), true);
+    // jolt_ruby_cube_id = engine.physics.createBody(e0, .box, engine.Vec3.init(0.0, 0.0, 0.0), true);
     jolt_gold_pyramid_id = engine.physics.createBody(e2, .box, engine.Vec3.init(24.0, 0.6, 0.0), true);
     jolt_neon_cylinder_id = engine.physics.createBody(e3, .box, engine.Vec3.init(-24.0, 1.6, 0.0), true);
 
@@ -300,20 +294,20 @@ export fn on_init() void {
                     updated_phys.spawned = true;
                     _ = engine.ecs.set(entity, comp_physics_id, updated_phys);
 
-                    // 3. Update the visual transform each frame based on Jolt simulation
-                    if (updated_phys.physics_id != 0) {
-                        // const pos = engine.physics.getPosition(updated_phys.physics_id);
-                        // engine.setEntityLocalPosition(entity, pos);
-                    }
-
                     return;
                 }
 
-                // 3. Update the visual transform each frame based on Jolt simulation
-                if (phys.physics_id != 0) {
-                    // const pos = engine.physics.getPosition(phys.physics_id);
-                    // engine.setEntityLocalPosition(entity, pos);
-                }
+                // engine.log.printf("Reported {d} position is {d} {d} {d}", .{
+                //     entity,
+                //     engine.getWorld().getEntity(entity).?.getWorldPosition().x,
+                //     engine.getWorld().getEntity(entity).?.getWorldPosition().y,
+                //     engine.getWorld().getEntity(entity).?.getWorldPosition().z,
+                // });
+
+                // Jolt -> ECS -> render synchronization is performed by the host.
+                // Do not write the simulated position back through the script API:
+                // that marks the transform dirty and teleports/reactivates the body
+                // during post-tick reconciliation.
             }
         }
     }.run);
@@ -394,8 +388,8 @@ export fn on_update(dt: f32) void {
     // 4. Idle scene rotation and face color pulse (preserves automated test suite invariants)
     engine.scene.rotate(0.35 * dt, 0.70 * dt);
     // engine.scene.setCameraDistance(3.6 + 0.5 * engine.math.sin(t * 1.5));
-    const pulse = 0.5 + 0.5 * engine.math.sin(t * 3.0);
-    engine.scene.setFaceColor(0, pulse, 0.55, 1.0 - pulse);
+    // const pulse = 0.5 + 0.5 * engine.math.sin(t * 3.0);
+    // engine.scene.setFaceColor(0, pulse, 0.55, 1.0 - pulse);
 
     // 5. Dynamic Showcase Animation: Orbiting Chrome Sphere (Entity 1)
     // const orbit_radius: f32 = 1.8;
@@ -463,7 +457,7 @@ export fn on_update(dt: f32) void {
     const key_crouch = engine.input.isKeyDown(scancode_c) or engine.input.isKeyDown(scancode_lctrl) or engine.input.isActionDown(.crouch);
 
     const key_e_pressed = key_e and !prev_key_e;
-    const key_q_pressed = key_q;
+    // const key_q_pressed = key_q and !prev_key_q;
     prev_key_e = key_e;
     prev_key_q = key_q;
 
@@ -594,21 +588,21 @@ export fn on_update(dt: f32) void {
         engine.log.print("[TECH DEMO] Gravitational Jump Pad launched player!");
     }
 
-    // if (!is_grounded) {
-    //     player_vel_y += GRAVITY_FPS * dt;
-    //     fps_pos.y += player_vel_y * dt;
-    //     const floor_limit = FLOOR_Y + current_eye_height;
-    //     if (fps_pos.y <= floor_limit) {
-    //         fps_pos.y = floor_limit;
-    //         if (player_vel_y < -3.0) {
-    //             engine.audio.playImpact(0.35); // Landing impact
-    //         }
-    //         player_vel_y = 0.0;
-    //         is_grounded = true;
-    //     }
-    // } else {
-    //     fps_pos.y = FLOOR_Y + current_eye_height;
-    // }
+    if (!is_grounded) {
+        player_vel_y += GRAVITY_FPS * dt;
+        fps_pos.y += player_vel_y * dt;
+        const floor_limit = FLOOR_Y + current_eye_height;
+        if (fps_pos.y <= floor_limit) {
+            fps_pos.y = floor_limit;
+            if (player_vel_y < -3.0) {
+                engine.audio.playImpact(0.35); // Landing impact
+            }
+            player_vel_y = 0.0;
+            is_grounded = true;
+        }
+    } else {
+        fps_pos.y = FLOOR_Y + current_eye_height;
+    }
 
     engine.setEntityLocalPosition(player_entity, fps_pos);
     engine.setEntityLocalRotation(player_entity, engine.Vec3.init(0.0, fps_yaw, 0.0));
@@ -652,19 +646,27 @@ export fn on_update(dt: f32) void {
     }
 
     // Dynamic Physics Spawner ([Q] key)
-    if (key_q_pressed) {
+    if (key_q) {
         const spawn_offset = engine.Vec3.init(fwd_x * 2.2, 0.8, fwd_z * 2.2);
         const spawn_pos = fps_pos.add(spawn_offset);
 
         if (spawned_prop_count < spawned_props.len) {
             const entity_id = engine.spawnEntity(@intFromEnum(engine.PrimitiveType.cube), spawn_pos, [_]f32{ 0.9, 0.55, 0.2, 1.0 });
             if (entity_id != engine.NO_PARENT) {
-                engine.setEntityLocalScale(entity_id, engine.Vec3.init(0.8, 0.8, 0.8));
+                // engine.setEntityLocalScale(entity_id, engine.Vec3.init(0.8, 0.8, 0.8));
                 engine.setEntityMaterial(entity_id, 0.3, 0.4, 0.0, 0);
                 engine.setEntityTag(entity_id, "physics_crate");
                 spawned_prop_count += 1;
 
-                _ = engine.ecs.set(entity_id, comp_physics_id, .{});
+                const body_id = engine.physics.createBody(entity_id, .box, spawn_pos, true);
+                if (body_id != 0) {
+                    const result = engine.ecs.set(entity_id, comp_physics_id, .{ .physics_id = body_id, .spawned = true });
+                    const is_active = engine.physics.isActive(body_id);
+
+                    engine.log.printf("Body is {s}, {}", .{ if (is_active) "active" else "not active", result });
+                } else {
+                    engine.log.print("[TECH DEMO] Failed to create Jolt physics body for spawned crate!");
+                }
             }
         }
 

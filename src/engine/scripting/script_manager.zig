@@ -306,6 +306,18 @@ pub const ScriptManager = struct {
                     self.context.guest_buffer_offset = offset;
                     self.context.host_state = wasm_state;
                     self.context.guest_state = wasm_state;
+                    const ecs_align = @as(usize, @alignOf(game_state.SharedEcsWorld));
+                    const ecs_offset = offset + @as(u32, @intCast((@sizeOf(GameState) + ecs_align - 1) & ~(ecs_align - 1)));
+                    if (wamr.getGuestMemorySliceMut(inst, ecs_offset, @sizeOf(game_state.SharedEcsWorld))) |ecs_slice| {
+                        const wasm_ecs: *game_state.SharedEcsWorld = @ptrCast(@alignCast(ecs_slice.ptr));
+                        if (self.context.shared_ecs) |prev_ecs| {
+                            if (prev_ecs != wasm_ecs) wasm_ecs.* = prev_ecs.*;
+                        } else {
+                            wasm_ecs.* = .{};
+                        }
+                        self.context.shared_ecs = wasm_ecs;
+                        if (self.context.ecs) |ew| ew.attachSharedWorld(wasm_ecs);
+                    }
                 }
             } else |_| {}
         }
@@ -492,7 +504,7 @@ pub const ScriptManager = struct {
 
     /// Step scripts attached to ECS entities
     pub fn stepEntityScripts(self: *ScriptManager, ecs: *flecs.EcsWorld, dt: f32) void {
-        var entities_buf: [256]flecs.Entity = undefined;
+        var entities_buf: [flecs.MAX_ENTITIES]flecs.Entity = undefined;
         const count = ecs.queryEntities(&[_]flecs.ComponentId{ecs.id_script}, &entities_buf);
         for (entities_buf[0..count]) |entity| {
             const sc = ecs.getScript(entity) orelse continue;

@@ -4,6 +4,7 @@ const c = wamr.c;
 const joltc = @import("../physics/jolt.zig").c;
 const PhysicsWorld = @import("../physics/jolt.zig").PhysicsWorld;
 const Scene = @import("../renderer/scene.zig").Scene;
+const ecs_mod = @import("../ecs/ecs.zig");
 const InputState = @import("../input/input.zig").InputState;
 const game_state = @import("../state/game_state.zig");
 const GameState = game_state.GameState;
@@ -44,6 +45,7 @@ pub const EngineContext = struct {
     // Authoritative shared game state (points directly to WASM's shared_memory_buffer when loaded)
     host_state: ?*GameState = null,
     guest_state: ?*const GameState = null,
+    shared_ecs: ?*game_state.SharedEcsWorld = null,
     guest_buffer_offset: ?u32 = null,
 
     // Diagnostics & testing state
@@ -63,6 +65,13 @@ pub const EngineContext = struct {
             const state: *GameState = @ptrCast(@alignCast(bytes.ptr));
             self.host_state = state;
             self.guest_state = state;
+            const ecs_align = @as(usize, @alignOf(game_state.SharedEcsWorld));
+            const ecs_offset = offset + @as(u32, @intCast((@sizeOf(GameState) + ecs_align - 1) & ~(ecs_align - 1)));
+            if (wamr.getGuestMemorySliceMut(inst, ecs_offset, @sizeOf(game_state.SharedEcsWorld))) |ecs_bytes| {
+                const ecs: *game_state.SharedEcsWorld = @ptrCast(@alignCast(ecs_bytes.ptr));
+                self.shared_ecs = ecs;
+                if (self.ecs) |ew| ew.attachSharedWorld(ecs);
+            }
             return state;
         }
         return self.host_state;
@@ -90,6 +99,9 @@ pub const EngineContext = struct {
         }
 
         if (self.host_state) |state| {
+            if (self.ecs) |ew| {
+                if (self.physics) |physics| ew.syncDirtyToPhysics(physics);
+            }
             state.stepAndResolve(dt);
 
             if (std.math.isFinite(state.scene.rotation_x)) {
@@ -118,8 +130,27 @@ pub const EngineContext = struct {
                         if (!ew.isAlive(slot)) {
                             _ = ew.initSlot(slot, null);
                         }
-                        ew.setPosition(slot, .{ .x = ent.position.x, .y = ent.position.y, .z = ent.position.z });
-                        ew.setRotation(slot, .{ .x = ent.rotation.x, .y = ent.rotation.y, .z = ent.rotation.z });
+                        if (!ew.hasComponent(slot, ew.id_transform)) {
+                            ew.setPosition(slot, .{ .x = ent.position.x, .y = ent.position.y, .z = ent.position.z });
+                            ew.setRotation(slot, .{ .x = ent.rotation.x, .y = ent.rotation.y, .z = ent.rotation.z });
+                            ew.setScale(slot, .{ .x = ent.scale.x, .y = ent.scale.y, .z = ent.scale.z });
+                        } else if (!ew.hasComponent(slot, ew.id_phys)) {
+                            // Hierarchy resolution produces world transforms in GameState.
+                            // Non-physics children, including camera parents, must consume
+                            // that resolved transform rather than retaining local ECS values.
+                            ew.setPosition(slot, .{ .x = ent.position.x, .y = ent.position.y, .z = ent.position.z });
+                            ew.setRotation(slot, .{ .x = ent.rotation.x, .y = ent.rotation.y, .z = ent.rotation.z });
+                            ew.setScale(slot, .{ .x = ent.scale.x, .y = ent.scale.y, .z = ent.scale.z });
+                        } else if (ew.getPosition(slot)) |position| {
+                            ent.position = .{ .x = position.x, .y = position.y, .z = position.z };
+                            ent.local_position = ent.position;
+                            if (ew.getRotation(slot)) |rotation| {
+                                ent.rotation = .{ .x = rotation.x, .y = rotation.y, .z = rotation.z };
+                                ent.local_rotation = ent.rotation;
+                            }
+                        }
+                        // Scale is not simulated by Jolt. Guest local-scale writes
+                        // therefore remain authoritative and must reach ECS/rendering.
                         ew.setScale(slot, .{ .x = ent.scale.x, .y = ent.scale.y, .z = ent.scale.z });
                         if (!ew.hasComponent(slot, ew.id_mesh)) {
                             ew.setMesh(slot, .{
@@ -133,8 +164,20 @@ pub const EngineContext = struct {
                     }
                 }
             }
+            if (self.ecs) |ew| {
+                if (self.physics) |physics| ew.syncDirtyToPhysics(physics);
+            }
+            // Bodies may be created or simulated during the WASM tick. Refresh
+            // ECS once more before rendering so visual transforms are current.
+            if (self.ecs) |ew| {
+                if (self.physics) |physics| ew.syncFromPhysics(physics);
+            }
 
-            if (state.header.entity_count > 0 or self.scene.object_count > 0) {
+            if (self.ecs) |ew| {
+                self.scene.clearObjects();
+                ew.syncToScene(self.scene);
+            } else if (state.header.entity_count > 0 or self.scene.object_count > 0) {
+                // Keep the legacy renderer path only for contexts without ECS.
                 self.scene.syncFromGameState(state);
             }
         }
@@ -214,29 +257,41 @@ fn host_spawn_entity(exec_env: c.wasm_exec_env_t, entity_type: u32, x: f32, y: f
     if (!isFiniteVec3(pos)) return game_state.NO_PARENT;
 
     const color = [_]f32{ r, g, b, a };
+    if (ctx.ecs) |ew| {
+        const entity = ew.newEntity(null);
+        if (entity == ecs_mod.INVALID_ENTITY) return game_state.NO_PARENT;
+
+        if (ctx.host_state) |state| {
+            state.initSlot(@intCast(entity));
+            state.entities[@intCast(entity)].entity_type = entity_type;
+            state.entities[@intCast(entity)].local_position = pos;
+            state.entities[@intCast(entity)].position = pos;
+            state.entities[@intCast(entity)].color = color;
+        }
+
+        ew.setPosition(entity, .{ .x = x, .y = y, .z = z });
+        ew.setScale(entity, .{ .x = 1.0, .y = 1.0, .z = 1.0 });
+        ew.setMesh(entity, .{
+            .primitive_type = entity_type % 5,
+            .color = color,
+            .metallic = 0.0,
+            .roughness = 0.5,
+            .visible = true,
+        });
+        ew.setHierarchy(entity, .{ .parent_id = ecs_mod.INVALID_ENTITY });
+        ew.setMetadata(entity, .{ .entity_type = entity_type });
+        return entity;
+    }
+
     if (ctx.host_state) |state| {
         for (&state.entities, 0..) |*ent, idx| {
             const slot: u32 = @intCast(idx);
-            const ecs_busy = if (ctx.ecs) |ew| ew.isAlive(slot) else false;
-            if (ent.active == 0 and !ecs_busy) {
+            if (ent.active == 0) {
                 state.initSlot(slot);
                 ent.entity_type = entity_type;
                 ent.local_position = pos;
                 ent.position = pos;
                 ent.color = color;
-
-                if (ctx.ecs) |ew| {
-                    _ = ew.initSlot(slot, null);
-                    ew.setPosition(slot, .{ .x = pos.x, .y = pos.y, .z = pos.z });
-                    ew.setScale(slot, .{ .x = 1.0, .y = 1.0, .z = 1.0 });
-                    ew.setMesh(slot, .{
-                        .primitive_type = entity_type % 5,
-                        .color = color,
-                        .metallic = 0.0,
-                        .roughness = 0.5,
-                        .visible = true,
-                    });
-                }
                 return slot;
             }
         }
@@ -310,6 +365,7 @@ fn host_set_entity_local_pos(exec_env: c.wasm_exec_env_t, id: u64, x: f32, y: f3
         {
             state.entities[@intCast(id)].local_position = pos;
             state.entities[@intCast(id)].position = pos;
+            if (ctx.ecs) |ew| ew.setPosition(id, .{ .x = x, .y = y, .z = z });
         }
     }
 }
@@ -321,6 +377,7 @@ fn host_set_entity_local_rot(exec_env: c.wasm_exec_env_t, id: u64, rx: f32, ry: 
         if (id < game_state.MAX_ENTITIES and state.entities[@intCast(id)].active != 0 and isFiniteVec3(rot)) {
             state.entities[@intCast(id)].local_rotation = rot;
             state.entities[@intCast(id)].rotation = rot;
+            if (ctx.ecs) |ew| ew.setRotation(id, .{ .x = rx, .y = ry, .z = rz });
         }
     }
 }
@@ -334,6 +391,7 @@ fn host_set_entity_local_scale(exec_env: c.wasm_exec_env_t, id: u64, sx: f32, sy
         {
             state.entities[@intCast(id)].local_scale = sc;
             state.entities[@intCast(id)].scale = sc;
+            if (ctx.ecs) |ew| ew.setScale(id, .{ .x = sx, .y = sy, .z = sz });
         }
     }
 }
@@ -357,7 +415,13 @@ fn host_set_entity_parent(exec_env: c.wasm_exec_env_t, child_id: u64, parent_id:
                 }
                 if (!has_cycle) {
                     state.entities[@intCast(child_id)].parent_id = parent_id;
+                    if (ctx.ecs) |ew| {
+                        ew.setHierarchy(child_id, .{ .parent_id = parent_id });
+                    }
                 }
+            }
+            if (parent_id == game_state.NO_PARENT) {
+                if (ctx.ecs) |ew| ew.setHierarchy(child_id, .{ .parent_id = ecs_mod.INVALID_ENTITY });
             }
         }
     }
@@ -371,6 +435,10 @@ fn host_set_entity_collider(exec_env: c.wasm_exec_env_t, id: u64, col_type: u32,
             state.entities[@intCast(id)].collider_type = @enumFromInt(col_type);
             state.entities[@intCast(id)].collider_extents = extents;
             state.entities[@intCast(id)].component_mask |= game_state.ComponentMask.COLLIDER;
+            if (ctx.ecs) |ew| ew.setCollider(id, .{
+                .collider_type = col_type,
+                .extents = .{ .x = ex, .y = ey, .z = ez },
+            });
         }
     }
 }
@@ -384,6 +452,15 @@ fn host_set_entity_tag(exec_env: c.wasm_exec_env_t, id: u64, tag_ptr: u32, tag_l
                 const len = @min(tag_str.len, 16);
                 @memset(&state.entities[@intCast(id)].tag, 0);
                 @memcpy(state.entities[@intCast(id)].tag[0..len], tag_str[0..len]);
+                if (ctx.ecs) |ew| {
+                    var metadata = ecs_mod.Metadata{};
+                    if (ew.getComponentPtrConst(id, ew.id_metadata, ecs_mod.Metadata)) |current| {
+                        metadata = current.*;
+                    }
+                    @memset(&metadata.tag, 0);
+                    @memcpy(metadata.tag[0..len], tag_str[0..len]);
+                    ew.setMetadata(id, metadata);
+                }
             }
         }
     }
@@ -395,6 +472,13 @@ fn host_set_entity_motion_type(exec_env: c.wasm_exec_env_t, id: u64, motion_type
         if (id < game_state.MAX_ENTITIES and state.entities[@intCast(id)].active != 0 and motion_type <= 2) {
             state.entities[@intCast(id)].motion_type = @enumFromInt(motion_type);
             state.entities[@intCast(id)].component_mask |= game_state.ComponentMask.RIGID_BODY;
+            if (ctx.ecs) |ew| {
+                if (ew.getPhysicsBody(id)) |body| {
+                    var physics_body = body.*;
+                    physics_body.is_dynamic = motion_type == @intFromEnum(game_state.MotionType.dynamic);
+                    _ = ew.setComponentData(id, ew.id_phys, std.mem.asBytes(&physics_body));
+                }
+            }
         }
     }
 }
@@ -407,6 +491,21 @@ fn host_set_entity_material(exec_env: c.wasm_exec_env_t, id: u64, metallic: f32,
             state.entities[@intCast(id)].roughness = roughness;
             state.entities[@intCast(id)].emissive = emissive;
             state.entities[@intCast(id)].shading_model = shading_model;
+            if (ctx.ecs) |ew| {
+                ew.setMaterial(id, .{
+                    .metallic = metallic,
+                    .roughness = roughness,
+                    .emissive = emissive,
+                    .shading_model = shading_model,
+                });
+                if (ew.getMesh(id)) |current| {
+                    var mesh = current.*;
+                    mesh.metallic = metallic;
+                    mesh.roughness = roughness;
+                    mesh.visible = true;
+                    ew.setMesh(id, mesh);
+                }
+            }
         }
     }
 }
@@ -416,6 +515,13 @@ fn host_set_entity_color(exec_env: c.wasm_exec_env_t, id: u64, r: f32, g: f32, b
     if (ctx.host_state) |state| {
         if (id < game_state.MAX_ENTITIES and state.entities[@intCast(id)].active != 0) {
             state.entities[@intCast(id)].color = [_]f32{ r, g, b, a };
+            if (ctx.ecs) |ew| {
+                if (ew.getMesh(id)) |current| {
+                    var mesh = current.*;
+                    mesh.color = .{ r, g, b, a };
+                    ew.setMesh(id, mesh);
+                }
+            }
         }
     }
 }
@@ -547,6 +653,14 @@ fn host_cos(_: c.wasm_exec_env_t, val: f32) callconv(.c) f32 {
 
 fn host_physics_create_body(exec_env: c.wasm_exec_env_t, entity_id: u64, shape_type: u32, x: f32, y: f32, z: f32, is_dynamic: u32) callconv(.c) u32 {
     const ctx = getContext(exec_env);
+    // Body creation can be requested both explicitly by gameplay and lazily by
+    // a script system. Keep the ABI idempotent so one entity cannot acquire
+    // multiple colliders.
+    if (ctx.ecs) |ew| {
+        if (ew.getPhysicsBody(entity_id)) |existing| {
+            if (existing.body_id != 0) return existing.body_id;
+        }
+    }
     var body_id: u32 = 0;
     if (ctx.physics) |phys| {
         const dyn = (is_dynamic != 0);
@@ -555,17 +669,85 @@ fn host_physics_create_body(exec_env: c.wasm_exec_env_t, entity_id: u64, shape_t
             if (!dyn) {
                 body_id = phys.createFloor(50.0, 0.5, 50.0, y) catch 0;
             } else {
-                body_id = phys.createBox(.{ x, y, z }, .{ 0.5, 0.5, 0.5 }, true) catch |err| {
+                var half_extents = [_]f32{ 0.5, 0.5, 0.5 };
+                var scale = Vec3.init(1.0, 1.0, 1.0);
+                // Guest scale writes land in shared GameState before this ABI
+                // call. Prefer that value because ECS reconciliation happens
+                // after the script tick and would otherwise still report 1.0.
+                if (ctx.host_state) |state| {
+                    if (entity_id < game_state.MAX_ENTITIES) {
+                        scale = state.entities[@intCast(entity_id)].scale;
+                    }
+                } else if (ctx.ecs) |ew| {
+                    if (ew.getScale(entity_id)) |ecs_scale| {
+                        scale = Vec3.init(ecs_scale.x, ecs_scale.y, ecs_scale.z);
+                    }
+                }
+                half_extents = .{
+                    0.5 * @max(scale.x, 0.001),
+                    0.5 * @max(scale.y, 0.001),
+                    0.5 * @max(scale.z, 0.001),
+                };
+                body_id = phys.createBox(.{ x, y, z }, half_extents, true) catch |err| {
                     std.log.err("{s}", .{@errorName(err)});
                     return 0;
                 };
             }
         } else {
             // Sphere
-            body_id = phys.createSphere(.{ x, y, z }, 0.5, dyn) catch 0;
+            var radius: f32 = 0.5;
+            if (dyn) {
+                var scale = Vec3.init(1.0, 1.0, 1.0);
+                if (ctx.host_state) |state| {
+                    if (entity_id < game_state.MAX_ENTITIES) {
+                        scale = state.entities[@intCast(entity_id)].scale;
+                    }
+                } else if (ctx.ecs) |ew| {
+                    if (ew.getScale(entity_id)) |ecs_scale| {
+                        scale = Vec3.init(ecs_scale.x, ecs_scale.y, ecs_scale.z);
+                    }
+                }
+                radius *= @max(scale.x, @max(scale.y, scale.z));
+            }
+            body_id = phys.createSphere(.{ x, y, z }, radius, dyn) catch 0;
         }
 
         joltc.JPH_BodyInterface_SetUserData(phys.body_interface, body_id, entity_id);
+        if (body_id != 0) {
+            if (ctx.ecs) |ew| {
+                ew.setPhysicsBody(entity_id, .{
+                    .body_id = body_id,
+                    .is_dynamic = dyn,
+                });
+            }
+            if (dyn) {
+                if (phys.getWorldBounds(body_id)) |bounds| {
+                    const center = phys.getPosition(body_id);
+                    std.log.info(
+                        "Jolt body {d} entity {d}: center y={d:.3}, bounds y=[{d:.3}, {d:.3}], scale={d:.3},{d:.3},{d:.3}",
+                        .{
+                            body_id,
+                            entity_id,
+                            center[1],
+                            bounds.min[1],
+                            bounds.max[1],
+                            if (ctx.host_state) |state|
+                                if (entity_id < game_state.MAX_ENTITIES) state.entities[@intCast(entity_id)].scale.x else 1.0
+                            else
+                                1.0,
+                            if (ctx.host_state) |state|
+                                if (entity_id < game_state.MAX_ENTITIES) state.entities[@intCast(entity_id)].scale.y else 1.0
+                            else
+                                1.0,
+                            if (ctx.host_state) |state|
+                                if (entity_id < game_state.MAX_ENTITIES) state.entities[@intCast(entity_id)].scale.z else 1.0
+                            else
+                                1.0,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     return body_id;
@@ -1119,7 +1301,9 @@ fn host_ecs_new_entity(
             if (ctx.host_state) |state| {
                 state.initSlot(slot);
             }
-            return ecs.initSlot(slot, name_slice);
+            const new_ent_id = ecs.initSlot(slot, name_slice);
+            std.debug.print("host_ecs_new_entity: Created entity with ID {d} and name '{s}'\n", .{ new_ent_id, name_slice orelse "Unnamed" });
+            return new_ent_id;
         }
     }
 
@@ -1232,8 +1416,8 @@ fn host_ecs_query_entities(
         }
     }
 
-    var temp_buf: [256]u64 = undefined;
-    const fetch_limit = @min(max_entities, 256);
+    var temp_buf: [game_state.MAX_ENTITIES]u64 = undefined;
+    const fetch_limit = @min(max_entities, temp_buf.len);
     const found = ecs.queryEntities(comp_ids_buf[0..safe_comp_count], temp_buf[0..fetch_limit]);
     for (0..found) |i| {
         const val = temp_buf[i];

@@ -253,6 +253,40 @@ pub const MAX_ENTITIES: u32 = 2048;
 pub const WORLD_MAGIC: u32 = 0x574F524C; // 'WORL'
 pub const WORLD_VERSION: u32 = 2;
 
+pub const ECS_MAX_ENTITIES: usize = 2048;
+pub const ECS_MAX_COMPONENTS: usize = 136;
+pub const ECS_MAX_DYNAMIC_COMPONENTS: usize = 128;
+pub const ECS_ARENA_SIZE: usize = 524288 * 2;
+
+pub const SharedEcsEntity = extern struct {
+    alive: u32 = 0,
+    generation: u32 = 1,
+    comp_mask: u128 = 0,
+    comp_mask_ext: u16 = 0,
+    _pad: [6]u8 = [_]u8{0} ** 6,
+};
+
+pub const SharedEcsColumn = extern struct {
+    id: u64 = 0,
+    name: [64]u8 = [_]u8{0} ** 64,
+    name_len: u32 = 0,
+    size: u32 = 0,
+    alignment: u32 = 1,
+    stride: u32 = 0,
+    data_offset: u32 = 0,
+};
+
+/// Relocatable ECS storage. All offsets are relative to the start of this struct.
+pub const SharedEcsWorld = extern struct {
+    magic: u32 = 0x45435357, // 'ECSW'
+    version: u32 = 1,
+    arena_used: u32 = 0,
+    column_count: u32 = 0,
+    entities: [ECS_MAX_ENTITIES]SharedEcsEntity = [_]SharedEcsEntity{.{}} ** ECS_MAX_ENTITIES,
+    columns: [ECS_MAX_COMPONENTS]SharedEcsColumn = [_]SharedEcsColumn{.{}} ** ECS_MAX_COMPONENTS,
+    arena: [ECS_ARENA_SIZE]u8 = [_]u8{0} ** ECS_ARENA_SIZE,
+};
+
 pub inline fn isFiniteVec3(v: Vec3) bool {
     return std.math.isFinite(v.x) and std.math.isFinite(v.y) and std.math.isFinite(v.z);
 }

@@ -53,6 +53,7 @@ pub const Scene = struct {
     rotation_y: f32 = 0.0,
     camera_distance: f32 = 3.5,
     vertices_dirty: bool = false,
+    batch_objects: bool = false,
 
     pub const cube_vertices = primitives.cube_vertices;
     pub const cube_indices = primitives.cube_indices;
@@ -111,8 +112,17 @@ pub const Scene = struct {
         const idx = self.object_count;
         self.objects[idx] = obj;
         self.object_count += 1;
-        self.rebuildCombinedMesh();
+        if (!self.batch_objects) self.rebuildCombinedMesh();
         return idx;
+    }
+
+    pub fn beginObjectBatch(self: *Scene) void {
+        self.batch_objects = true;
+    }
+
+    pub fn endObjectBatch(self: *Scene) void {
+        self.batch_objects = false;
+        self.rebuildCombinedMesh();
     }
 
     pub fn addCube(self: *Scene, pos: [3]f32, scale_dim: [3]f32, mat: Material) ?usize {

@@ -21,10 +21,15 @@ pub const BroadPhaseLayers = struct {
 };
 
 pub const MAX_CHARACTERS = 2048;
-pub const MAX_CONSTRAINTS = 256;
+pub const MAX_CONSTRAINTS = 2048;
 
 /// Ground state reported for virtual characters.
 pub const GroundState = enum(u32) { on_ground = 0, sliding = 1, in_air = 2 };
+
+pub const BodyBounds = struct {
+    min: [3]f32,
+    max: [3]f32,
+};
 
 pub const ShapeCastHit = extern struct {
     entity_id: u64 = 0,
@@ -103,16 +108,18 @@ pub const PhysicsWorld = struct {
         ) orelse return error.JoltFilterFailed;
 
         var settings = std.mem.zeroes(c.JPH_PhysicsSystemSettings);
-        settings.maxBodies = 4096;
+        settings.maxBodies = 8192;
         settings.numBodyMutexes = 0;
-        settings.maxBodyPairs = 4096;
-        settings.maxContactConstraints = 4096;
+        settings.maxBodyPairs = 65536;
+        settings.maxContactConstraints = 16384;
         settings.broadPhaseLayerInterface = broad_phase_layer_interface;
         settings.objectLayerPairFilter = object_layer_pair_filter;
         settings.objectVsBroadPhaseLayerFilter = object_vs_broad_phase_layer_filter;
 
         const system = c.JPH_PhysicsSystem_Create(&settings) orelse return error.JoltSystemFailed;
         const body_interface = c.JPH_PhysicsSystem_GetBodyInterface(system) orelse return error.JoltBodyInterfaceFailed;
+        const gravity = c.JPH_Vec3{ .x = 0.0, .y = -9.81, .z = 0.0 };
+        c.JPH_PhysicsSystem_SetGravity(system, &gravity);
 
         return .{
             .job_system = job_system,
@@ -157,7 +164,10 @@ pub const PhysicsWorld = struct {
             Layers.NON_MOVING,
         ) orelse return error.BodySettingsFailed;
         defer c.JPH_BodyCreationSettings_Destroy(body_settings);
-        c.JPH_BodyCreationSettings_SetRestitution(body_settings, 0.8);
+        // A highly bouncy floor destabilizes dense stacks: small penetration
+        // corrections can repeatedly launch nearby boxes.
+        c.JPH_BodyCreationSettings_SetRestitution(body_settings, 0.0);
+        c.JPH_BodyCreationSettings_SetFriction(body_settings, 0.8);
 
         const body_id = c.JPH_BodyInterface_CreateAndAddBody(self.body_interface, body_settings, @intCast(c.JPH_Activation_DontActivate));
         return body_id;
@@ -178,7 +188,11 @@ pub const PhysicsWorld = struct {
             layer,
         ) orelse return error.BodySettingsFailed;
         defer c.JPH_BodyCreationSettings_Destroy(body_settings);
-        c.JPH_BodyCreationSettings_SetRestitution(body_settings, 0.85);
+        c.JPH_BodyCreationSettings_SetRestitution(body_settings, 0.0);
+        c.JPH_BodyCreationSettings_SetFriction(body_settings, 0.8);
+        c.JPH_BodyCreationSettings_SetAllowSleeping(body_settings, false);
+        c.JPH_BodyCreationSettings_SetLinearDamping(body_settings, 0.05);
+        c.JPH_BodyCreationSettings_SetAngularDamping(body_settings, 0.2);
 
         const body_id = c.JPH_BodyInterface_CreateAndAddBody(self.body_interface, body_settings, activation);
         return body_id;
@@ -200,7 +214,11 @@ pub const PhysicsWorld = struct {
             layer,
         ) orelse return error.BodySettingsFailed;
         defer c.JPH_BodyCreationSettings_Destroy(body_settings);
-        c.JPH_BodyCreationSettings_SetRestitution(body_settings, 0.6);
+        c.JPH_BodyCreationSettings_SetRestitution(body_settings, 0.0);
+        c.JPH_BodyCreationSettings_SetFriction(body_settings, 0.8);
+        c.JPH_BodyCreationSettings_SetAllowSleeping(body_settings, false);
+        c.JPH_BodyCreationSettings_SetLinearDamping(body_settings, 0.05);
+        c.JPH_BodyCreationSettings_SetAngularDamping(body_settings, 0.2);
 
         const body_id = c.JPH_BodyInterface_CreateAndAddBody(self.body_interface, body_settings, activation);
         return body_id;
@@ -218,6 +236,20 @@ pub const PhysicsWorld = struct {
     pub fn setLinearVelocity(self: *PhysicsWorld, body_id: u32, vel: [3]f32) void {
         var j_vel = c.JPH_Vec3{ .x = vel[0], .y = vel[1], .z = vel[2] };
         c.JPH_BodyInterface_SetLinearVelocity(self.body_interface, body_id, &j_vel);
+    }
+
+    pub fn setPositionAndRotation(self: *PhysicsWorld, body_id: u32, pos: [3]f32, rot: [3]f32) void {
+        var j_pos = c.JPH_RVec3{ .x = pos[0], .y = pos[1], .z = pos[2] };
+        var angles = c.JPH_Vec3{ .x = rot[0], .y = rot[1], .z = rot[2] };
+        var j_rot: c.JPH_Quat = undefined;
+        c.JPH_Quat_FromEulerAngles(&angles, &j_rot);
+        c.JPH_BodyInterface_SetPositionAndRotation(
+            self.body_interface,
+            body_id,
+            &j_pos,
+            &j_rot,
+            @intCast(c.JPH_Activation_Activate),
+        );
     }
 
     pub fn getPosition(self: *PhysicsWorld, body_id: u32) [3]f32 {
@@ -252,6 +284,16 @@ pub const PhysicsWorld = struct {
         var vel: c.JPH_Vec3 = undefined;
         c.JPH_BodyInterface_GetLinearVelocity(self.body_interface, body_id, &vel);
         return .{ vel.x, vel.y, vel.z };
+    }
+
+    pub fn getWorldBounds(self: *PhysicsWorld, body_id: u32) ?BodyBounds {
+        const body = self.bodyPtr(body_id) orelse return null;
+        var bounds: c.JPH_AABox = undefined;
+        c.JPH_Body_GetWorldSpaceBounds(body, &bounds);
+        return .{
+            .min = .{ bounds.min.x, bounds.min.y, bounds.min.z },
+            .max = .{ bounds.max.x, bounds.max.y, bounds.max.z },
+        };
     }
 
     pub fn isBodyActive(self: *PhysicsWorld, body_id: u32) bool {

@@ -279,15 +279,15 @@ pub const GameState = extern struct {
 // -------------------------------------------------------------------------------------------------
 // 2. Shared Memory Buffer exported to / imported from host
 // -------------------------------------------------------------------------------------------------
-
-pub export var shared_memory_buffer: [524288]u8 align(4096) = [_]u8{0} ** 524288;
+const MEM_SIZE = 1048576 * 16;
+pub export var shared_memory_buffer: [MEM_SIZE]u8 align(4096) = [_]u8{0} ** MEM_SIZE;
 
 pub export fn get_shared_buffer_ptr() [*]const u8 {
     return &shared_memory_buffer;
 }
 
 pub export fn get_shared_buffer_len() u32 {
-    return 524288;
+    return MEM_SIZE;
 }
 
 pub inline fn getSharedState() *const GameState {
@@ -866,31 +866,33 @@ pub fn teleportPlayer(player_id: u32, pos: Vec3) void {
 /// Synchronously allocates an entity slot across both `GameState` and `EcsWorld` (1:1 unified ID)
 /// and returns the allocated Entity ID (`0..MAX_ENTITIES - 1`, or `NO_PARENT` on failure).
 pub fn spawnEntity(entity_type: u32, pos: Vec3, color: [4]f32) u64 {
-    if (is_wasm) {
-        return engine_spawn_entity(entity_type, pos.x, pos.y, pos.z, color[0], color[1], color[2], color[3]);
-    } else {
-        if (!isFiniteVec3(pos)) return NO_PARENT;
-        const state = getSharedStateMut();
-        for (&state.entities, 0..) |*ent, idx| {
-            if (ent.active == 0) {
-                ent.* = .{
-                    .id = idx,
-                    .active = 1,
-                    .parent_id = NO_PARENT,
-                    .component_mask = ComponentMask.ACTIVE | ComponentMask.TRANSFORM | ComponentMask.RENDERABLE,
-                    .entity_type = entity_type,
-                    .position = pos,
-                    .local_position = pos,
-                    .local_scale = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
-                    .scale = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
-                    .color = color,
-                };
-                state.header.entity_count += 1;
-                return idx;
-            }
-        }
-        return NO_PARENT;
-    }
+    // if (is_wasm) {
+    //     return engine_spawn_entity(entity_type, pos.x, pos.y, pos.z, color[0], color[1], color[2], color[3]);
+    // } else {
+    //     if (!isFiniteVec3(pos)) return NO_PARENT;
+    //     const state = getSharedStateMut();
+    //     for (&state.entities, 0..) |*ent, idx| {
+    //         if (ent.active == 0) {
+    //             ent.* = .{
+    //                 .id = idx,
+    //                 .active = 1,
+    //                 .parent_id = NO_PARENT,
+    //                 .component_mask = ComponentMask.ACTIVE | ComponentMask.TRANSFORM | ComponentMask.RENDERABLE,
+    //                 .entity_type = entity_type,
+    //                 .position = pos,
+    //                 .local_position = pos,
+    //                 .local_scale = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
+    //                 .scale = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
+    //                 .color = color,
+    //             };
+    //             state.header.entity_count += 1;
+    //             return idx;
+    //         }
+    //     }
+    //     return NO_PARENT;
+    // }
+
+    return engine_spawn_entity(entity_type, pos.x, pos.y, pos.z, color[0], color[1], color[2], color[3]);
 }
 
 /// Synchronously despawns an entity across both `GameState` and `EcsWorld`.
@@ -1818,7 +1820,7 @@ pub const ecs = struct {
     pub fn runSystem(sys_id: SystemId, dt: f32) void {
         for (systems_pool[0..registered_system_count]) |*s| {
             if (s.id == sys_id and s.enabled) {
-                var entities_buf: [256]EntityId = undefined;
+                var entities_buf: [2048]EntityId = undefined;
                 const count = query(s.comp_ids[0..s.comp_count], &entities_buf);
                 if (s.batch_callback) |batch_cb| {
                     batch_cb(entities_buf[0..count], dt);
@@ -1834,7 +1836,7 @@ pub const ecs = struct {
 
     /// Advances and executes all registered UGC systems for the frame.
     pub fn step(dt: f32) void {
-        var entities_buf: [256]EntityId = undefined;
+        var entities_buf: [2048]EntityId = undefined;
         for (systems_pool[0..registered_system_count]) |*s| {
             if (!s.enabled) continue;
             const count = query(s.comp_ids[0..s.comp_count], &entities_buf);

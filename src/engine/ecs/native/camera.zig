@@ -41,8 +41,6 @@ pub fn CameraSystem(world: *ecs.EcsWorld, entity_id: u64, _: f32, context: ?*any
             camera.position = .init(p.x, p.y, p.z);
             camera.yaw = if (world.getRotation(entity_id)) |r| r.y else 0.0;
             camera.pitch = if (world.getRotation(entity_id)) |r| r.x else 0.0;
-            std.debug.print("camera yaw: {d}, pitch: {d}\n", .{ camera.yaw, camera.pitch });
-            std.debug.print("camera position: {d} {d} {d}\n", .{ p.x, p.y, p.z });
         }
     }
 }

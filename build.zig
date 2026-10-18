@@ -194,6 +194,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const shared_math_mod = b.createModule(.{
+        .root_source_file = b.path("src/shared/math.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    engine_mod.addImport("shared_math", shared_math_mod);
     engine_mod.addImport("sdl3", sdl3_mod);
     engine_mod.addImport("wgpu", wgpu_mod);
     engine_mod.linkLibrary(sdl_lib);

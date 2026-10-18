@@ -101,16 +101,11 @@ pub fn main() !void {
         total_time_sec += dt;
         fps_timer_sec += dt;
         frame_count += 1;
-
-        // if (fps_timer_sec >= 1.0) {
-        //     std.debug.print("FPS: {d} | Window: {d}x{d}\n", .{
-        //         frame_count,
-        //         window.width,
-        //         window.height,
-        //     });
-        //     frame_count = 0;
-        //     fps_timer_sec -= 1.0;
-        // }
+        const frame_start_ns = now_ns;
+        var physics_end_ns: u64 = now_ns;
+        var script_end_ns: u64 = now_ns;
+        var ecs_end_ns: u64 = now_ns;
+        var render_end_ns: u64 = now_ns;
 
         // --- Input Processing ---
         input.pollEvents();
@@ -139,10 +134,8 @@ pub fn main() !void {
         physics.update(dt);
 
         // 2. Synchronize Physics -> Flecs ECS
-        // ecs_world.syncFromPhysics(&physics);
-
-        // 3. Step Flecs ECS Subsystem
-        _ = ecs_world.progress(dt);
+        ecs_world.syncFromPhysics(&physics);
+        physics_end_ns = sdl.SDL_GetTicksNS();
 
         // 4. Clear 2D UI batch before script execution
         renderer.ui.begin();
@@ -151,12 +144,35 @@ pub fn main() !void {
         script_context.time = total_time_sec;
         script_context.delta_time = dt;
         try script_host.callUpdate(dt);
+        script_end_ns = sdl.SDL_GetTicksNS();
+
+        // 3. Step Flecs ECS Subsystem
+        _ = ecs_world.progress(dt);
+        ecs_end_ns = sdl.SDL_GetTicksNS();
 
         // 6. Step Particle Simulation Physics
         renderer.updateParticles(dt);
 
         // 7. Render 3D Scene + Post-Processing + 2D UI Overlay Pass with Script-Controlled Camera
         try renderer.renderWithCamera(&scene, script_context.camera, total_time_sec);
+        render_end_ns = sdl.SDL_GetTicksNS();
+
+        if (fps_timer_sec >= 1.0) {
+            const nsToMs = @as(f64, 1.0) / 1_000_000.0;
+            std.debug.print(
+                "FPS {d} | physics {d:.2}ms script {d:.2}ms ecs {d:.2}ms render {d:.2}ms total {d:.2}ms\n",
+                .{
+                    frame_count,
+                    @as(f64, @floatFromInt(physics_end_ns - frame_start_ns)) * nsToMs,
+                    @as(f64, @floatFromInt(script_end_ns - physics_end_ns)) * nsToMs,
+                    @as(f64, @floatFromInt(ecs_end_ns - script_end_ns)) * nsToMs,
+                    @as(f64, @floatFromInt(render_end_ns - ecs_end_ns)) * nsToMs,
+                    @as(f64, @floatFromInt(render_end_ns - frame_start_ns)) * nsToMs,
+                },
+            );
+            frame_count = 0;
+            fps_timer_sec -= 1.0;
+        }
     }
 
     std.debug.print("Shutting down cleanly...\n", .{});

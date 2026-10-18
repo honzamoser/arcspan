@@ -5,6 +5,7 @@ const engine_api = @import("engine_api.zig");
 const EngineContext = engine_api.EngineContext;
 const game_state = @import("../state/game_state.zig");
 const GameState = game_state.GameState;
+const SharedEcsWorld = game_state.SharedEcsWorld;
 
 pub const ScriptHost = struct {
     module: ?c.wasm_module_t = null,
@@ -21,6 +22,7 @@ pub const ScriptHost = struct {
     // Fallback heap state before/without a loaded WASM module; once WASM loads,
     // context.host_state and context.guest_state point directly into WASM linear memory.
     fallback_state: ?*GameState = null,
+    fallback_ecs: ?*SharedEcsWorld = null,
     guest_buffer_offset: ?u32 = null,
 
     pub fn init(context: *EngineContext, stack_size: u32) wamr.WasmError!ScriptHost {
@@ -46,12 +48,19 @@ pub const ScriptHost = struct {
 
             context.host_state = state;
             context.guest_state = state;
+            const fecs = std.heap.page_allocator.create(SharedEcsWorld) catch null;
+            if (fecs) |ecs| {
+                ecs.* = .{};
+                context.shared_ecs = ecs;
+                if (context.ecs) |ew| ew.bindSharedWorld(ecs);
+            }
         }
 
         return .{
             .context = context,
             .stack_size = stack_size,
             .fallback_state = fb,
+            .fallback_ecs = context.shared_ecs,
         };
     }
 
@@ -63,6 +72,10 @@ pub const ScriptHost = struct {
         if (self.fallback_state) |fb| {
             std.heap.page_allocator.destroy(fb);
             self.fallback_state = null;
+        }
+        if (self.fallback_ecs) |ecs| {
+            std.heap.page_allocator.destroy(ecs);
+            self.fallback_ecs = null;
         }
         if (self.exec_env) |env| {
             c.wasm_runtime_destroy_exec_env(env);
@@ -168,6 +181,18 @@ pub const ScriptHost = struct {
                     }
                     self.context.host_state = wasm_state;
                     self.context.guest_state = wasm_state;
+                    const ecs_align = @as(usize, @alignOf(SharedEcsWorld));
+                    const ecs_offset = offset + @as(u32, @intCast((@sizeOf(GameState) + ecs_align - 1) & ~(ecs_align - 1)));
+                    if (wamr.getGuestMemorySliceMut(inst, ecs_offset, @sizeOf(SharedEcsWorld))) |ecs_slice| {
+                        const wasm_ecs: *SharedEcsWorld = @ptrCast(@alignCast(ecs_slice.ptr));
+                        if (self.context.shared_ecs) |prev_ecs| {
+                            if (prev_ecs != wasm_ecs) wasm_ecs.* = prev_ecs.*;
+                        } else {
+                            wasm_ecs.* = .{};
+                        }
+                        self.context.shared_ecs = wasm_ecs;
+                        if (self.context.ecs) |ew| ew.attachSharedWorld(wasm_ecs);
+                    }
                 }
             } else |_| {}
         }
