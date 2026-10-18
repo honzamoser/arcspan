@@ -1,0 +1,3 @@
+[submodule "external/wamr"]
+	path = external/wamr
+	url = https://github.com/wasm-micro-runtime/wasm-micro-runtime.git
